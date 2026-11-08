@@ -9,7 +9,11 @@
 <meta property="og:title" content="وِرد — الأذكار والقرآن">
 <meta property="og:description" content="أذكار الصباح والمساء والنوم وبعد الصلاة، والقرآن الكريم بالتفسير والتلاوة، ومواقيت الصلاة، وتعمل بدون إنترنت.">
 <meta property="og:locale" content="ar_AR">
-<meta property="og:image" content="icons/icon-512.png">
+<meta property="og:url" content="https://mohamedsalahhassap.github.io/wird/">
+<meta property="og:image" content="https://mohamedsalahhassap.github.io/wird/icons/icon-512.png">
+<meta property="og:image:width" content="512">
+<meta property="og:image:height" content="512">
+<link rel="canonical" href="https://mohamedsalahhassap.github.io/wird/">
 <meta name="theme-color" content="#0f766e">
 <meta name="color-scheme" content="light dark">
 <link rel="manifest" href="manifest.json">
@@ -745,21 +749,53 @@ window.addEventListener('scroll', () => {
 const flush = () => { clearTimeout(saveTimer); saveState(); };
 window.addEventListener('pagehide', flush);
 
+/* ===== التنقل وزر الرجوع (History API) =====
+   navDepth: 0 = الرئيسية، 1 = قسم (أذكار/القرآن/السبحة/المفضلة)، 2 = سورة داخل القرآن
+   كل نافذة منبثقة (الإعدادات/التفسير/...) تأخذ خانة في السجل، فيغلقها الرجوع ويبقيك في مكانك. */
+let navDepth = 0;
+let pendingTab = null;
+let sheetClosing = false;
+
+function leaveSurahCleanup() {
+  flush(); stopPlayback();
+  activeSurah = null; ayahEls = []; loadToken++;
+}
+function applyNav(st) {
+  const t = (st && st.t) || 'home', s = (st && st.s) || 0;
+  const wasSurah = !!activeSurah;
+  navDepth = t === 'home' ? 0 : (s ? 2 : 1);
+  if (query) closeSearch();
+  if (wasSurah && s !== activeSurah) leaveSurahCleanup();
+  currentTab = t;
+  if (s) activeSurah = s;
+  render();
+  window.scrollTo(0, (wasSurah && !s && t === 'quran') ? (listScroll || 0) : 0);
+}
 function openSurah(id) {
   if (query) closeSearch();
   if (!activeSurah) listScroll = window.scrollY;
+  try {
+    if (navDepth === 0) { history.pushState({ t:'quran', s:0 }, ''); history.pushState({ t:'quran', s:id }, ''); }
+    else if (navDepth === 1) {
+      if (currentTab !== 'quran') history.replaceState({ t:'quran', s:0 }, '');
+      history.pushState({ t:'quran', s:id }, '');
+    } else history.replaceState({ t:'quran', s:id }, '');
+  } catch (e) {}
+  navDepth = 2;
+  if (activeSurah && activeSurah !== id) leaveSurahCleanup();
   activeSurah = id; currentTab = 'quran';
-  try { history.pushState({ surah:id }, ''); } catch (e) {}
   render(); window.scrollTo(0, 0);
 }
-function closeSurah() {
-  if (!activeSurah) return;
-  flush();
-  stopPlayback();
-  activeSurah = null; ayahEls = []; loadToken++;
-  if (currentTab === 'quran') { render(); window.scrollTo(0, listScroll || 0); }
-}
-window.addEventListener('popstate', closeSurah);
+window.addEventListener('popstate', e => {
+  if (sheetClosing) { sheetClosing = false; return; }                    /* أغلقنا النافذة برمجياً، لا شيء آخر */
+  if ($('#sheetRoot').innerHTML) { closeSheet(true); return; }           /* الرجوع وهناك نافذة مفتوحة: أغلقها فقط */
+  if (pendingTab) {                                                      /* من داخل سورة إلى قسم آخر */
+    const t = pendingTab; pendingTab = null;
+    try { history.replaceState({ t, s:0 }, ''); } catch (err) {}
+    applyNav({ t, s:0 }); return;
+  }
+  applyNav(e.state);
+});
 
 /* ===== التلاوة المتصلة آية بآية مع تتبّع الآية الحالية ===== */
 const AYAH_BASE = (() => { const b = []; let s = 0; AYAHS.forEach(n => { b.push(s); s += n; }); return b; })();
@@ -955,8 +991,16 @@ function renderSebha() {
 }
 
 function setTab(id) {
-  currentTab = id;
   if (query) closeSearch();
+  if (id === 'quran' && activeSurah) { history.back(); return; }          /* ضغط القرآن وأنت داخل سورة = قائمة السور */
+  if (id === 'home') {
+    if (navDepth > 0) history.go(-navDepth);
+    else { currentTab = 'home'; render(); window.scrollTo({ top:0 }); }
+    return;
+  }
+  if (navDepth === 2) { pendingTab = id; history.back(); return; }
+  try { if (navDepth === 0) history.pushState({ t:id, s:0 }, ''); else history.replaceState({ t:id, s:0 }, ''); } catch (e) {}
+  navDepth = 1; currentTab = id;
   render(); window.scrollTo({ top:0 });
 }
 function closeSearch() { query = ''; $('#q').value = ''; $('#searchRow').hidden = true; $('#searchBtn').setAttribute('aria-expanded', 'false'); }
@@ -980,7 +1024,7 @@ document.addEventListener('click', e => {
     case 'resume': if (state.lastRead) openSurah(state.lastRead.surah); break;
     case 'retry-surah': if (activeSurah) loadSurah(activeSurah, true); break;
     case 'back-quran':
-      if (history.state && history.state.surah) history.back(); else closeSurah();
+      if (navDepth === 2) history.back(); else applyNav({ t:'quran', s:0 });
       break;
     case 'toggle-audio': if (activeSurah) toggleAudio(activeSurah); break;
     case 'q-font': {
@@ -1088,11 +1132,20 @@ function toast(msg) {
 }
 
 function openSheet(id, html) {
-  closeSheet();
-  $('#sheetRoot').innerHTML = `<div class="backdrop"></div><section class="sheet" role="dialog" aria-modal="true"><div class="grab"></div>${html}</section>`;
+  const root = $('#sheetRoot'), had = !!root.innerHTML;
+  root.innerHTML = `<div class="backdrop"></div><section class="sheet" role="dialog" aria-modal="true"><div class="grab"></div>${html}</section>`;
   document.body.classList.add('noscroll');
+  if (!had) { try { history.pushState({ t:currentTab, s:activeSurah || 0, sheet:1 }, ''); } catch (e) {} }
 }
-function closeSheet() { const r = $('#sheetRoot'); if (r.innerHTML) r.innerHTML = ''; document.body.classList.remove('noscroll'); }
+function closeSheet(fromPop) {
+  const root = $('#sheetRoot'), had = !!root.innerHTML;
+  if (had) root.innerHTML = '';
+  document.body.classList.remove('noscroll');
+  if (had && !fromPop && history.state && history.state.sheet) {
+    sheetClosing = true; setTimeout(() => { sheetClosing = false; }, 600);
+    try { history.back(); } catch (e) { sheetClosing = false; }
+  }
+}
 
 function openSettings() {
   const groups = CITY_GROUPS.map((g, gi) => `<optgroup label="${esc(g)}">${CITIES.filter(c => c.g === gi).map(c => `<option value="${c.i}" ${cfg.loc.idx === c.i ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</optgroup>`).join('');
@@ -1180,6 +1233,7 @@ $('#settingsBtn').innerHTML = svg('sliders');
 applyTheme(document.documentElement.dataset.theme || 'light');
 rollover();
 currentTab = 'home';
+try { history.replaceState({ t:'home', s:0 }, ''); } catch (e) {}
 render();
 
 /* ===== رسالة الإتمام ===== */

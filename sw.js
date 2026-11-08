@@ -75,3 +75,40 @@ self.addEventListener('fetch', event => {
     return (await cache.match(req, { ignoreSearch: true })) || Response.error();
   })());
 });
+
+/* ===== التذكيرات: النقر على الإشعار + التنبيه الدوري بالخلفية (إن دعمه الجهاز) ===== */
+self.addEventListener('notificationclick', event => {
+  event.notification.close();
+  const go = (event.notification.data && event.notification.data.go) || '';
+  event.waitUntil((async () => {
+    const list = await self.clients.matchAll({ type:'window', includeUncontrolled:true });
+    for (const c of list) {
+      if ('focus' in c) { await c.focus(); if (go) c.postMessage({ go }); return; }
+    }
+    await self.clients.openWindow('./' + (go ? '?go=' + go : ''));
+  })());
+});
+
+self.addEventListener('periodicsync', event => {
+  if (event.tag !== 'wird-remind') return;
+  event.waitUntil((async () => {
+    const cache = await caches.open('azkar-rem-v1');
+    const res = await cache.match('rem.json'); if (!res) return;
+    const d = await res.json(); if (!d || !d.on) return;
+    const now = new Date(), pad = n => String(n).padStart(2, '0');
+    const today = now.getFullYear() + '-' + pad(now.getMonth() + 1) + '-' + pad(now.getDate());
+    const names = { m:['أذكار الصباح','morning'], e:['أذكار المساء','evening'], w:['وِرد اليوم','wird'] };
+    const m = now.getHours() * 60 + now.getMinutes();
+    let changed = false;
+    for (const k of ['m','e','w']) {
+      const it = d.items && d.items[k]; if (!it || !it.on) continue;
+      const [hh, mm] = it.t.split(':'), t = +hh * 60 + +mm;
+      if (m < t || m > t + 240) continue;
+      if (d.fired && d.fired[k] === today) continue;
+      if (d.date === today && d.done && d.done[k]) continue;
+      await self.registration.showNotification(names[k][0], { body:(d.body && d.body[k]) || '', icon:'icons/icon-192.png', badge:'icons/icon-192.png', tag:'wird-' + k, lang:'ar', dir:'rtl', data:{ go:names[k][1] } });
+      d.fired = d.fired || {}; d.fired[k] = today; changed = true;
+    }
+    if (changed) await cache.put('rem.json', new Response(JSON.stringify(d), { headers:{ 'content-type':'application/json' } }));
+  })());
+});

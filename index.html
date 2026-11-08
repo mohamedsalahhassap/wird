@@ -169,6 +169,9 @@ svg .f{fill:currentColor;fill-opacity:.16;stroke:none}
 .wird-btns{display:grid;grid-template-columns:1.2fr 1fr;gap:8px}.wird-btns .btn{padding:.65rem .5rem;font-size:.95rem}
 .wird-foot{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:.7rem;font-size:.82rem;color:var(--muted)}
 .wird-undo{border:none;background:none;color:var(--primary);font-weight:700;font-size:.82rem;cursor:pointer;text-decoration:underline;padding:0}
+.tgl{display:flex;align-items:center;gap:.6rem;font-weight:600;margin-bottom:.5rem}.tgl input,.rem-row input[type=checkbox]{width:1.25rem;height:1.25rem;accent-color:var(--primary)}
+.rem-row{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:.5rem 0;border-top:1px solid var(--border)}.rem-row label{display:flex;align-items:center;gap:.55rem;margin:0;font-weight:600}
+.rem-row input[type=time]{padding:.4rem .5rem;border-radius:.7rem;border:1px solid var(--border);background:var(--card);color:var(--text);font:inherit}
 .hub{display:grid;gap:10px}
 .hub button{display:flex;align-items:center;gap:.9rem;text-align:right;border:1px solid var(--border);background:var(--card);border-radius:1.1rem;padding:.8rem .9rem;cursor:pointer;color:var(--text)}
 .hub button.now{border-color:var(--primary);box-shadow:0 0 0 2px color-mix(in srgb,var(--primary) 25%,transparent)}
@@ -436,12 +439,23 @@ function loadCfg() {
   const c = store.get(CKEY, {}) || {};
   const d = CITIES[0];
   const loc = c.loc && isFinite(c.loc.lat) && isFinite(c.loc.lng) ? c.loc : { name:d.name, lat:d.lat, lng:d.lng, tz:d.tz, idx:d.i };
-  return { loc, method: METHODS[c.method] ? c.method : d.m, fs: ['sm','md','lg','xl'].includes(c.fs) ? c.fs : 'md', reciter: RECITERS[c.reciter] ? c.reciter : 'afasy', hj: [-1, 0, 1].includes(c.hj) ? c.hj : 0 };
+  return { loc, method: METHODS[c.method] ? c.method : d.m, fs: ['sm','md','lg','xl'].includes(c.fs) ? c.fs : 'md', reciter: RECITERS[c.reciter] ? c.reciter : 'afasy', hj: [-1, 0, 1].includes(c.hj) ? c.hj : 0, rem: loadRem(c.rem) };
+}
+const REM_DEF = { m:{ on:true, t:'06:00' }, e:{ on:true, t:'17:30' }, w:{ on:false, t:'21:00' } };
+function loadRem(r) {
+  const out = { on:false, items:{} };
+  r = r && typeof r === 'object' ? r : {};
+  out.on = r.on === true;
+  for (const k of ['m','e','w']) {
+    const it = (r.items && r.items[k]) || {};
+    out.items[k] = { on: typeof it.on === 'boolean' ? it.on : REM_DEF[k].on, t: /^([01]\d|2[0-3]):[0-5]\d$/.test(it.t) ? it.t : REM_DEF[k].t };
+  }
+  return out;
 }
 let state = loadState();
 let cfg = loadCfg();
-const saveState = () => store.set(SKEY, state);
-const saveCfg = () => store.set(CKEY, cfg);
+const saveState = () => { store.set(SKEY, state); queueRemSync(); };
+const saveCfg = () => { store.set(CKEY, cfg); queueRemSync(); };
 
 let currentTab = 'home';
 let query = '';
@@ -568,6 +582,77 @@ function currentPeriod() {
 function autoTab() {
   try { const { z, t } = prayerToday(); if (isFinite(t.fajr) && isFinite(t.asr)) return (z.h >= t.fajr && z.h < t.asr) ? 'morning' : 'evening'; } catch (e) {}
   return (new Date().getHours() >= 4 && new Date().getHours() < 15) ? 'morning' : 'evening';
+}
+
+/* ===================== التذكيرات ===================== */
+const REM_KEY = 'azkar_rem_fired_v1';
+const REMS = {
+  m:{ name:'أذكار الصباح', title:'أذكار الصباح', body:'حان وقت أذكار الصباح، ابدأ يومك بذكر الله', go:'morning', done:() => secDone('morning') },
+  e:{ name:'أذكار المساء', title:'أذكار المساء', body:'حان وقت أذكار المساء، لا تنسَ وردك', go:'evening', done:() => secDone('evening') },
+  w:{ name:'وِرد اليوم', title:'وِرد اليوم', body:'وِردك اليوم بانتظارك، ولو بصفحات قليلة', go:'wird', done:() => wirdToday() > 0 }
+};
+const remMin = t => { const [a, b] = t.split(':'); return +a * 60 + +b; };
+const remFired = () => store.get(REM_KEY, {}) || {};
+const notifOK = () => typeof Notification !== 'undefined' && Notification.permission === 'granted';
+function remDue(k, now) {
+  const it = cfg.rem.items[k]; if (!it || !it.on) return false;
+  const m = now.getHours() * 60 + now.getMinutes(), t = remMin(it.t);
+  if (m < t || m > t + 240) return false;                       /* تُرسل خلال 4 ساعات من الموعد فقط */
+  if (remFired()[k] === today()) return false;
+  return !REMS[k].done();
+}
+async function showReminder(k) {
+  const r = REMS[k];
+  if (!document.hidden) { toast('🔔 ' + r.body); vibrate(20); return; }
+  if (notifOK() && 'serviceWorker' in navigator) {
+    try {
+      const reg = await navigator.serviceWorker.ready;
+      await reg.showNotification(r.title, { body:r.body, icon:'icons/icon-192.png', badge:'icons/icon-192.png', tag:'wird-' + k, lang:'ar', dir:'rtl', data:{ go:r.go } });
+    } catch (e) {}
+  }
+}
+function checkReminders() {
+  if (!cfg.rem.on) return;
+  const now = new Date();
+  for (const k of ['m','e','w']) {
+    if (remDue(k, now)) {
+      const f = remFired(); f[k] = today(); store.set(REM_KEY, f);
+      showReminder(k); queueRemSync();
+    }
+  }
+}
+/* نسخة من الإعدادات والإنجاز في الكاش ليقرأها الـ Service Worker عند التنبيه بالخلفية */
+let remSyncT = null;
+function queueRemSync() { clearTimeout(remSyncT); remSyncT = setTimeout(syncRem, 800); }
+async function syncRem() {
+  try {
+    if (!('caches' in window)) return;
+    const data = { on: cfg.rem.on && notifOK(), items: cfg.rem.items, date: today(), fired: remFired(), done: { m:REMS.m.done(), e:REMS.e.done(), w:REMS.w.done() }, body: { m:REMS.m.body, e:REMS.e.body, w:REMS.w.body } };
+    const c = await caches.open('azkar-rem-v1');
+    await c.put('rem.json', new Response(JSON.stringify(data), { headers:{ 'content-type':'application/json' } }));
+  } catch (e) {}
+}
+async function registerPeriodic() {
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    if (!reg.periodicSync) return;
+    if (cfg.rem.on && notifOK()) await reg.periodicSync.register('wird-remind', { minInterval: 60 * 60 * 1000 });
+    else await reg.periodicSync.unregister('wird-remind');
+  } catch (e) {}
+}
+function remStatus() {
+  if (typeof Notification === 'undefined') return isIOS && !isStandalone() ? 'على الآيفون: ثبّت التطبيق على الشاشة الرئيسية أولاً (زر المشاركة ← إضافة إلى الشاشة الرئيسية) ثم فعّل التذكيرات.' : 'متصفحك لا يدعم الإشعارات، فسيظهر التذكير داخل التطبيق فقط وهو مفتوح.';
+  if (Notification.permission === 'denied') return 'الإشعارات محظورة لهذا الموقع من إعدادات المتصفح. فعّلها من هناك، وإلى ذلك سيظهر التذكير داخل التطبيق وهو مفتوح.';
+  if (!cfg.rem.on) return 'اختر الأذكار والأوقات المناسبة، وسيصلك إشعار بها إن لم تكن أتممتها بعد.';
+  return 'يعمل التذكير بثبات والتطبيق مفتوح أو في الخلفية. وعند إغلاقه تماماً قد لا يصل على بعض الأجهزة (خصوصاً مع توفير البطارية) لأن المتصفحات لا تضمن ذلك دون خادم.';
+}
+function remBoxHTML() {
+  const rows = cfg.rem.on ? ['m','e','w'].map(k => `<div class="rem-row"><label><input type="checkbox" data-rem="${k}" ${cfg.rem.items[k].on ? 'checked' : ''}> ${REMS[k].name}</label><input type="time" data-remt="${k}" value="${cfg.rem.items[k].t}" aria-label="موعد ${REMS[k].name}"></div>`).join('') + '<button class="btn ghost" data-act="rem-test">🔔 جرّب إشعاراً الآن</button>' : '';
+  return `<label class="tgl"><input type="checkbox" id="remOn" ${cfg.rem.on ? 'checked' : ''}> تفعيل التذكيرات</label>${rows}<p class="hint">${remStatus()}</p>`;
+}
+function gotoTarget(go) {
+  if (go === 'morning' || go === 'evening') { if (query) closeSearch(); closeSheet(); setTab(go); }
+  else if (go === 'wird') { closeSheet(); setTab('home'); setTimeout(() => { const w = $('.wird'); if (w) w.scrollIntoView({ block:'center', behavior:'smooth' }); }, 150); }
 }
 
 /* ===================== التنقل والبطاقات ===================== */
@@ -1160,6 +1245,12 @@ document.addEventListener('click', e => {
       $$('.seg [data-act="fs"]').forEach(x => x.setAttribute('aria-pressed', String(x.dataset.v === cfg.fs)));
       break;
     case 'geo': useMyLocation(); break;
+    case 'rem-test': {
+      if (typeof Notification !== 'undefined' && Notification.permission === 'granted' && 'serviceWorker' in navigator) {
+        navigator.serviceWorker.ready.then(reg => reg.showNotification('وِرد', { body:'هكذا سيصلك التذكير، تقبّل الله طاعتك', icon:'icons/icon-192.png', badge:'icons/icon-192.png', tag:'wird-test', lang:'ar', dir:'rtl', data:{ go:'' } })).then(() => toast('أُرسل إشعار تجريبي')).catch(() => toast('تعذّر إرسال الإشعار'));
+      } else toast('فعّل إذن الإشعارات أولاً من المتصفح');
+      break;
+    }
     case 'dl-quran': downloadQuran(); break;
     case 'install-open': installApp(); break;
     case 'install-later': store.set('azkar_install_dismiss', Date.now()); closeSheet(); $('#installBtn').hidden = true; break;
@@ -1182,6 +1273,21 @@ document.addEventListener('change', e => {
     cfg.method = t.value; pcache.key = ''; saveCfg(); if (currentTab === 'home' && !query) renderHome();
   } else if (t.id === 'reciterSel' && RECITERS[t.value]) {
     cfg.reciter = t.value; saveCfg(); stopPlayback();
+  } else if (t.id === 'remOn') {
+    cfg.rem.on = t.checked;
+    if (t.checked && typeof Notification !== 'undefined' && Notification.permission === 'default') {
+      Notification.requestPermission().then(() => { saveCfg(); registerPeriodic(); const b = $('#remBox'); if (b) b.innerHTML = remBoxHTML(); });
+    }
+    saveCfg(); registerPeriodic(); const b = $('#remBox'); if (b) b.innerHTML = remBoxHTML();
+    if (t.checked) setTimeout(checkReminders, 300);
+  } else if (t.dataset && t.dataset.rem) {
+    cfg.rem.items[t.dataset.rem].on = t.checked; saveCfg(); checkReminders();
+  } else if (t.dataset && t.dataset.remt) {
+    if (/^([01]\d|2[0-3]):[0-5]\d$/.test(t.value)) {
+      const k = t.dataset.remt; cfg.rem.items[k].t = t.value;
+      const f = remFired(); delete f[k]; store.set(REM_KEY, f);
+      saveCfg(); checkReminders();
+    }
   } else if (t.id === 'hjSel') {
     cfg.hj = [-1, 0, 1].includes(+t.value) ? +t.value : 0; saveCfg();
     if (currentTab === 'home' && !query) renderHome();
@@ -1244,6 +1350,7 @@ function openSettings() {
     <div class="field"><span class="l">القراءة دون إنترنت</span>
       <button class="btn ghost" id="dlBtn" data-act="dl-quran" ${state.quranOffline && state.tafsirOffline ? 'disabled' : ''}>⬇ تحميل المصحف والتفسير</button>
       <p class="hint" id="dlStatus">${state.quranOffline && state.tafsirOffline ? '✓ المصحف والتفسير محمّلان ويعملان دون إنترنت' : 'يُحفظ نص المصحف والتفسير على جهازك مرة واحدة (حجمهما بضعة ميجابايت). التلاوة الصوتية تحتاج إنترنت دائماً.'}</p></div>
+    <div class="field"><span class="l">التذكيرات</span><div id="remBox">${remBoxHTML()}</div></div>
     <button class="btn ghost block" data-act="about" style="margin-bottom:.6rem">عن التطبيق</button>
     <button class="btn block" data-act="close">تم</button>`);
 }
@@ -1337,8 +1444,16 @@ function celebrate(secId) {
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) { flush(); return; }
   if (rollover()) render();
+  checkReminders();
 });
+if ('serviceWorker' in navigator) navigator.serviceWorker.addEventListener('message', e => { if (e.data && e.data.go) gotoTarget(e.data.go); });
+(function () {
+  let go = ''; try { go = new URLSearchParams(location.search).get('go') || ''; } catch (e) {}
+  if (go) { try { history.replaceState(history.state, '', location.pathname); } catch (e) {} setTimeout(() => gotoTarget(go), 100); }
+  setTimeout(() => { checkReminders(); syncRem(); registerPeriodic(); }, 1500);
+})();
 setInterval(() => {
+  checkReminders();
   if (rollover()) { render(); return; }
   if (currentTab === 'home' && !query && !$('.sheet')) renderHome();
 }, 30000);

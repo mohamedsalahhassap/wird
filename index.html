@@ -490,6 +490,13 @@ function juzSegments(j) {
   return segs;
 }
 const inJuz = (j, id, n) => { const r = juzRange(j); return (id > r.s || (id === r.s && n >= r.a)) && (id < r.es || (id === r.es && n <= r.ea)); };
+/* موضع الورد اليومي منفصل تماماً عن موضع «متابعة القراءة» الخاص بالمصحف */
+const wirdPos = j => {
+  const p = state.wird.pos;
+  if (p) return p.j === j && inJuz(j, p.s, p.n) ? { surah:p.s, ayah:p.n } : null;
+  const lr = state.lastRead;                           /* تحويل لمرة واحدة لمن بدأ الجزء قبل هذا التحديث */
+  return lr && inJuz(j, lr.surah, lr.ayah) ? { surah:lr.surah, ayah:lr.ayah } : null;
+};
 const viewHas = (id, n) => activeJuz ? inJuz(activeJuz, id, n) : activeSurah === id;
 const elFor = (id, n) => ayahMap.get(id + ':' + n) || null;
 /* الآية التالية/السابقة داخل المعروض حالياً (سورة واحدة أو الجزء كله) */
@@ -886,7 +893,7 @@ async function loadJuz(j, restore) {
     ayahEls = $$('.ayah', b);
     ayahMap = new Map(ayahEls.map(e => [e.dataset.s + ':' + e.dataset.n, e]));
     const end = $('#juzEnd'); if (end) end.hidden = false;
-    const first = segs[0], lr = state.lastRead;
+    const first = segs[0], lr = wirdPos(j);
     let target = null;
     if (jumpTo) { target = jumpTo; jumpTo = null; }
     else if (restore && lr && inJuz(j, lr.surah, lr.ayah)) target = { id: lr.surah, n: lr.ayah };
@@ -928,6 +935,12 @@ function trackReading() {
     if (ayahEls[mid].getBoundingClientRect().bottom > line) { ans = mid; hi = mid - 1; } else lo = mid + 1;
   }
   const n = +ayahEls[ans].dataset.n, id = +ayahEls[ans].dataset.s || activeSurah;
+  if (activeJuz) {                                          /* قراءة الورد تُحفظ في موضع الورد فقط */
+    const w = state.wird;
+    if (w.pos && w.pos.j === activeJuz && w.pos.s === id && w.pos.n === n) return;
+    w.pos = { j:activeJuz, s:id, n };
+    clearTimeout(saveTimer); saveTimer = setTimeout(saveState, 400); return;
+  }
   if (state.reading[id] === n && state.lastRead && state.lastRead.surah === id && state.lastRead.ayah === n) return;
   state.reading[id] = n; state.lastRead = { surah:id, ayah:n, ts:Date.now() };
   clearTimeout(saveTimer); saveTimer = setTimeout(saveState, 400);
@@ -1045,8 +1058,8 @@ function toggleAudio(id) {
     const p = audioPlayer.play(); if (p && p.catch) p.catch(() => {}); return;
   }
   if (activeJuz) {                                       /* ابدأ من موضعك في الجزء، وإلا من أوله */
-    const lr = state.lastRead, r = juzRange(activeJuz);
-    if (lr && inJuz(activeJuz, lr.surah, lr.ayah)) playAyah(lr.surah, lr.ayah); else playAyah(r.s, r.a);
+    const lr = wirdPos(activeJuz), r = juzRange(activeJuz);
+    if (lr) playAyah(lr.surah, lr.ayah); else playAyah(r.s, r.a);
     return;
   }
   playAyah(id, state.reading[id] > 0 ? state.reading[id] : 1);   /* ابدأ من الآية التي وصلت إليها في القراءة */
@@ -1227,7 +1240,8 @@ function closeSearch() { query = ''; $('#q').value = ''; $('#searchRow').hidden 
 /* إتمام جزء الوِرد: تسجيله والانتقال للجزء التالي */
 function wirdComplete() {
   const w = state.wird;
-  w.undo = { juz:w.juz, khatmas:w.khatmas, day:today(), n:w.day === today() ? w.n : 0, prevDay:w.day };
+  w.undo = { juz:w.juz, khatmas:w.khatmas, day:today(), n:w.day === today() ? w.n : 0, prevDay:w.day, pos:w.pos || null };
+  w.pos = null;
   w.n = wirdToday() + 1; w.day = today();
   if (w.juz >= 30) { w.juz = 1; w.khatmas++; toast('ما شاء الله، ختمت القرآن 🌙 تقبّل الله منك'); }
   else { w.juz++; toast('تقبّل الله، الجزء التالي: ' + JUZ_NAMES[w.juz - 1]); }
@@ -1261,7 +1275,7 @@ document.addEventListener('click', e => {
       const order = ['sm','md','lg','xl'];
       const i = Math.min(order.length - 1, Math.max(0, order.indexOf(cfg.fs) + (+b.dataset.d)));
       cfg.fs = order[i]; document.documentElement.dataset.fs = cfg.fs; saveCfg();
-      const pos = state.lastRead, keepEl = pos && elFor(pos.surah, pos.ayah);
+      const pos = activeJuz ? wirdPos(activeJuz) : state.lastRead, keepEl = pos && elFor(pos.surah, pos.ayah);
       if (keepEl && (activeJuz || pos.ayah > 1)) keepEl.scrollIntoView({ block:'start' });
       break;
     }
@@ -1272,8 +1286,8 @@ document.addEventListener('click', e => {
     case 'play-from': if (activeSurah) { const pid = tafCtx ? tafCtx.id : activeSurah; closeSheet(); playAyah(pid, +b.dataset.n); } break;
     case 'wird-read': {
       /* يفتح الجزء كاملاً متتابعاً؛ وإن كنت قد بدأته من قبل يكمل من آخر موضع وصلت إليه */
-      const j = state.wird.juz, r = juzRange(j), lr = state.lastRead;
-      jumpTo = (lr && inJuz(j, lr.surah, lr.ayah)) ? { id:lr.surah, n:lr.ayah } : { id:r.s, n:r.a };
+      const j = state.wird.juz, r = juzRange(j), lr = wirdPos(j);
+      jumpTo = lr ? { id:lr.surah, n:lr.ayah } : { id:r.s, n:r.a };
       openSurah(r.s, j);
       break;
     }
@@ -1281,7 +1295,7 @@ document.addEventListener('click', e => {
     case 'wird-finish': wirdComplete(); setTab('home'); break;
     case 'wird-undo': {
       const w = state.wird, u = w.undo; if (!u) break;
-      w.juz = u.juz; w.khatmas = u.khatmas; w.n = u.n; w.day = u.prevDay || ''; w.undo = null;
+      w.juz = u.juz; w.khatmas = u.khatmas; w.n = u.n; w.day = u.prevDay || ''; w.undo = null; w.pos = u.pos || null;
       saveState(); render();
       break;
     }

@@ -953,7 +953,7 @@ function leaveSurahCleanup() {
 function applyNav(st) {
   const t = (st && st.t) || 'home', s = (st && st.s) || 0, j = (st && st.j) || 0;
   const wasSurah = !!activeSurah;
-  navDepth = t === 'home' ? 0 : (s ? 2 : 1);
+  navDepth = t === 'home' ? 0 : (s && !j ? 2 : 1);   /* الجزء المتصل خانة واحدة في السجل */
   if (query) closeSearch();
   if (wasSurah && (s !== activeSurah || j !== activeJuz)) leaveSurahCleanup();
   currentTab = t;
@@ -966,13 +966,16 @@ function openSurah(id, juz) {
   if (query) closeSearch();
   if (!activeSurah) listScroll = window.scrollY;
   try {
-    if (navDepth === 0) { history.pushState({ t:'quran', s:0 }, ''); history.pushState({ t:'quran', s:id, j:juz }, ''); }
+    if (juz) {
+      if (navDepth === 0) history.pushState({ t:'quran', s:id, j:juz }, '');
+      else history.replaceState({ t:'quran', s:id, j:juz }, '');
+    } else if (navDepth === 0) { history.pushState({ t:'quran', s:0 }, ''); history.pushState({ t:'quran', s:id, j:0 }, ''); }
     else if (navDepth === 1) {
       if (currentTab !== 'quran') history.replaceState({ t:'quran', s:0 }, '');
-      history.pushState({ t:'quran', s:id, j:juz }, '');
-    } else history.replaceState({ t:'quran', s:id, j:juz }, '');
+      history.pushState({ t:'quran', s:id, j:0 }, '');
+    } else history.replaceState({ t:'quran', s:id, j:0 }, '');
   } catch (e) {}
-  navDepth = 2;
+  navDepth = juz ? 1 : 2;
   if (activeSurah && (activeSurah !== id || activeJuz !== juz)) leaveSurahCleanup();
   activeSurah = id; activeJuz = juz; currentTab = 'quran';
   render(); window.scrollTo(0, 0);
@@ -1203,6 +1206,11 @@ function renderSebha() {
 
 function setTab(id) {
   if (query) closeSearch();
+  if (activeJuz && id !== 'home') {                                      /* من قراءة الجزء إلى قسم آخر */
+    leaveSurahCleanup();
+    try { history.replaceState({ t:id, s:0 }, ''); } catch (e) {}
+    navDepth = 1; currentTab = id; render(); window.scrollTo({ top:0 }); return;
+  }
   if (id === 'quran' && activeSurah) { history.back(); return; }          /* ضغط القرآن وأنت داخل سورة = قائمة السور */
   if (id === 'home') {
     if (navDepth > 0) history.go(-navDepth);

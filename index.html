@@ -113,6 +113,10 @@ main{padding:12px var(--gut) 10px;max-width:780px;margin:0 auto;outline:none}
 .quran-text .ayah{scroll-margin-top:calc(var(--hdr-h) + 64px);border-radius:.4rem;transition:background 1s}
 .quran-text .ayah.flash{background:color-mix(in srgb,var(--primary) 20%,transparent)}
 .ayah-num{display:inline-flex;align-items:center;justify-content:center;width:1.7em;height:1.7em;border-radius:50%;border:1.5px solid var(--primary);box-shadow:0 0 0 2px var(--card),0 0 0 3.5px color-mix(in srgb,var(--primary) 45%,transparent);font-family:'Cairo',system-ui,sans-serif;font-weight:700;font-size:.42em;line-height:1;color:var(--primary);margin:0 .55em;vertical-align:middle;position:relative;top:-.15em;white-space:nowrap}
+.juz-surah{font-family:'Cairo',system-ui,sans-serif;font-size:.95rem;font-weight:700;color:var(--primary);text-align:center;text-align-last:center;margin:1.8rem 0 .7rem;padding:.4rem 0;border-block:1px solid var(--border);line-height:1.6}
+.juz-seg:first-child .juz-surah{margin-top:.3rem}
+.juz-end{display:flex;justify-content:center;margin-top:1.6rem}
+.juz-end[hidden]{display:none}
 .q-state{text-align:center;color:var(--muted);padding:2.5rem 1rem;line-height:2;font-family:'Cairo',sans-serif;font-size:1rem;text-align-last:center}
 .spin{display:inline-block;width:1rem;height:1rem;border:2px solid var(--border);border-top-color:var(--primary);border-radius:50%;animation:spin .8s linear infinite;vertical-align:-3px;margin-inline-end:.5rem}
 @keyframes spin{to{transform:rotate(360deg)}}
@@ -460,7 +464,9 @@ const saveCfg = () => { store.set(CKEY, cfg); queueRemSync(); };
 let currentTab = 'home';
 let query = '';
 let activeSurah = null;
+let activeJuz = 0;            /* رقم الجزء المفتوح للقراءة المتصلة (0 = سورة عادية) */
 let ayahEls = [];
+let ayahMap = new Map();      /* 'سورة:آية' ← عنصر الآية */
 let listScroll = 0;
 let loadToken = 0;
 const audioPlayer = new Audio();
@@ -477,6 +483,21 @@ function juzRange(j) {
   if (j === 30) { es = 114; ea = AYAHS[113]; }
   else { const [ns, na] = JUZ_START[j]; if (na > 1) { es = ns; ea = na - 1; } else { es = ns - 1; ea = AYAHS[es - 1]; } }
   return { s, a, es, ea };
+}
+function juzSegments(j) {
+  const r = juzRange(j), segs = [];
+  for (let id = r.s; id <= r.es; id++) segs.push({ id, a: id === r.s ? r.a : 1, b: id === r.es ? r.ea : AYAHS[id - 1] });
+  return segs;
+}
+const inJuz = (j, id, n) => { const r = juzRange(j); return (id > r.s || (id === r.s && n >= r.a)) && (id < r.es || (id === r.es && n <= r.ea)); };
+const viewHas = (id, n) => activeJuz ? inJuz(activeJuz, id, n) : activeSurah === id;
+const elFor = (id, n) => ayahMap.get(id + ':' + n) || null;
+/* الآية التالية/السابقة داخل المعروض حالياً (سورة واحدة أو الجزء كله) */
+function stepAyah(id, n, d) {
+  let i = id, m = n + d;
+  if (m < 1) { i--; m = i >= 1 ? AYAHS[i - 1] : 0; } else if (m > AYAHS[id - 1]) { i++; m = 1; }
+  if (i < 1 || i > 114 || m < 1) return null;
+  return viewHas(i, m) ? [i, m] : null;
 }
 const wirdToday = () => state.wird.day === today() ? state.wird.n : 0;
 const remaining = it => Math.max(0, it.c - (state.counts[it.id] || 0));
@@ -786,22 +807,24 @@ function ayahWords(id, i, t) {
   if (i === 0 && id !== 1 && id !== 9 && words.length > 4 && norm(words.slice(0, 4).join(' ')) === 'بسم الله الرحمن الرحيم') words = words.slice(4);
   return words;
 }
-function buildAyahs(id, texts) {
+function buildAyahs(id, texts, a, b) {
+  a = a || 1; b = b || texts.length;
   return texts.map((t, i) => {
+    if (i + 1 < a || i + 1 > b) return '';
     const html = ayahWords(id, i, t).map(w => JALAL_RE.test(norm(w)) ? `<span class="jalal-word">${esc(w)}</span>` : esc(w)).join(' ');
-    return `<span class="ayah" data-act="ayah" data-n="${i + 1}">${html} <span class="ayah-num">${toAr(i + 1)}</span></span>`;
-  }).join(' ');
+    return `<span class="ayah" data-act="ayah" data-s="${id}" data-n="${i + 1}">${html} <span class="ayah-num">${toAr(i + 1)}</span></span>`;
+  }).filter(Boolean).join(' ');
 }
 
 function renderQuran() {
   const main = $('#main');
-  ayahEls = [];
+  ayahEls = []; ayahMap = new Map();
   if (activeSurah) {
     const id = activeSurah;
     main.innerHTML = `<div class="quran-view">
       <div class="quran-head">
-        <button class="pill" data-act="back-quran" style="display:flex;align-items:center;gap:5px">${svg('back', 'width="16" height="16"')}السور</button>
-        <h3>سورة ${esc(SURAHS[id - 1])}</h3>
+        <button class="pill" data-act="${activeJuz ? 'juz-back' : 'back-quran'}" style="display:flex;align-items:center;gap:5px">${svg('back', 'width="16" height="16"')}${activeJuz ? 'الرئيسية' : 'السور'}</button>
+        <h3>${activeJuz ? 'الجزء ' + JUZ_NAMES[activeJuz - 1] : 'سورة ' + esc(SURAHS[id - 1])}</h3>
         <div class="qtools">
           <button class="ibtn sm" data-act="q-font" data-d="-1" aria-label="تصغير الخط">أ−</button>
           <button class="ibtn sm" data-act="q-font" data-d="1" aria-label="تكبير الخط">أ+</button>
@@ -809,11 +832,12 @@ function renderQuran() {
         </div>
       </div>
       ${store.get('azkar_tafsir_seen', false) ? '' : '<div class="q-hint">💡 اضغط على أي آية لعرض تفسيرها</div>'}
-      ${id !== 1 && id !== 9 ? `<div class="quran-basmala">${BASMALA}</div>` : ''}
+      ${!activeJuz && id !== 1 && id !== 9 ? `<div class="quran-basmala">${BASMALA}</div>` : ''}
       <div class="quran-text" id="quranText"></div>
+      ${activeJuz ? '<div class="juz-end" id="juzEnd" hidden><button class="btn" data-act="wird-finish">✓ أتممت الجزء</button></div>' : ''}
     </div>`;
     syncAudio();
-    loadSurah(id, true);
+    if (activeJuz) loadJuz(activeJuz, true); else loadSurah(id, true);
     return;
   }
   const lr = state.lastRead;
@@ -833,7 +857,8 @@ async function loadSurah(id, restore) {
     const b = $('#quranText'); if (!b) return;
     b.innerHTML = buildAyahs(id, texts);
     ayahEls = $$('.ayah', b);
-    if (jumpTo && jumpTo.id === id) { const j = jumpTo; jumpTo = null; scrollToAyah(j.n); }
+    ayahMap = new Map(ayahEls.map(e => [e.dataset.s + ':' + e.dataset.n, e]));
+    if (jumpTo && jumpTo.id === id) { const j = jumpTo; jumpTo = null; scrollToAyah(j.id, j.n); }
     else if (restore) restoreAyah(id);
     if (play.id === id && play.n) highlightPlaying(play.n);
   } catch (e) {
@@ -844,8 +869,39 @@ async function loadSurah(id, restore) {
   }
 }
 
-function scrollToAyah(n) {
-  const el = ayahEls[n - 1]; if (!el) return;
+/* قراءة الجزء كاملاً في صفحة واحدة: كل سور الجزء تُحمَّل وتُعرض متتابعة */
+async function loadJuz(j, restore) {
+  const token = ++loadToken;
+  const box = $('#quranText'); if (!box) return;
+  box.innerHTML = '<div class="q-state"><span class="spin"></span>جارٍ تحميل الجزء…</div>';
+  try {
+    const segs = juzSegments(j), texts = {};
+    let next = 0;
+    await Promise.all(Array.from({ length: Math.min(5, segs.length) }, async () => {
+      while (next < segs.length) { const sg = segs[next++]; texts[sg.id] = await getSurah(sg.id); }
+    }));
+    if (token !== loadToken || activeJuz !== j) return;
+    const b = $('#quranText'); if (!b) return;
+    b.innerHTML = segs.map(sg => `<div class="juz-seg"><div class="juz-surah">سورة ${esc(SURAHS[sg.id - 1])}</div>${sg.a === 1 && sg.id !== 1 && sg.id !== 9 ? `<div class="quran-basmala">${BASMALA}</div>` : ''}${buildAyahs(sg.id, texts[sg.id], sg.a, sg.b)}</div>`).join('');
+    ayahEls = $$('.ayah', b);
+    ayahMap = new Map(ayahEls.map(e => [e.dataset.s + ':' + e.dataset.n, e]));
+    const end = $('#juzEnd'); if (end) end.hidden = false;
+    const first = segs[0], lr = state.lastRead;
+    let target = null;
+    if (jumpTo) { target = jumpTo; jumpTo = null; }
+    else if (restore && lr && inJuz(j, lr.surah, lr.ayah)) target = { id: lr.surah, n: lr.ayah };
+    if (target && !(target.id === first.id && target.n === first.a)) scrollToAyah(target.id, target.n);
+    if (play.id && play.n && viewHas(play.id, play.n)) highlightPlaying(play.n);
+  } catch (e) {
+    if (token !== loadToken || activeJuz !== j) return;
+    const b = $('#quranText'); if (!b) return;
+    const offline = !navigator.onLine || e.name === 'TypeError' || e.name === 'AbortError';
+    b.innerHTML = `<div class="q-state">${offline ? 'تعذر تحميل الجزء. تحقق من اتصالك بالإنترنت.<br><small>يمكنك تحميل المصحف كاملاً للقراءة دون إنترنت من الإعدادات.</small>' : 'حدث خطأ أثناء جلب الجزء.'}<br><br><button class="btn" data-act="retry-surah">إعادة المحاولة</button></div>`;
+  }
+}
+
+function scrollToAyah(id, n) {
+  const el = elFor(id, n); if (!el) return;
   requestAnimationFrame(() => {
     el.scrollIntoView({ block:'start' });
     el.classList.add('flash'); setTimeout(() => el.classList.remove('flash'), 1800);
@@ -853,8 +909,8 @@ function scrollToAyah(n) {
 }
 function restoreAyah(id) {
   const n = state.reading[id];
-  if (!(n > 1) || !ayahEls[n - 1]) return;
-  const el = ayahEls[n - 1];
+  if (!(n > 1) || !elFor(id, n)) return;
+  const el = elFor(id, n);
   requestAnimationFrame(() => {
     el.scrollIntoView({ block:'start' });
     el.classList.add('flash'); setTimeout(() => el.classList.remove('flash'), 1800);
@@ -871,7 +927,7 @@ function trackReading() {
     const mid = (lo + hi) >> 1;
     if (ayahEls[mid].getBoundingClientRect().bottom > line) { ans = mid; hi = mid - 1; } else lo = mid + 1;
   }
-  const n = ans + 1, id = activeSurah;
+  const n = +ayahEls[ans].dataset.n, id = +ayahEls[ans].dataset.s || activeSurah;
   if (state.reading[id] === n && state.lastRead && state.lastRead.surah === id && state.lastRead.ayah === n) return;
   state.reading[id] = n; state.lastRead = { surah:id, ayah:n, ts:Date.now() };
   clearTimeout(saveTimer); saveTimer = setTimeout(saveState, 400);
@@ -892,32 +948,33 @@ let sheetClosing = false;
 
 function leaveSurahCleanup() {
   flush(); stopPlayback();
-  activeSurah = null; ayahEls = []; loadToken++;
+  activeSurah = null; activeJuz = 0; ayahEls = []; ayahMap = new Map(); loadToken++;
 }
 function applyNav(st) {
-  const t = (st && st.t) || 'home', s = (st && st.s) || 0;
+  const t = (st && st.t) || 'home', s = (st && st.s) || 0, j = (st && st.j) || 0;
   const wasSurah = !!activeSurah;
   navDepth = t === 'home' ? 0 : (s ? 2 : 1);
   if (query) closeSearch();
-  if (wasSurah && s !== activeSurah) leaveSurahCleanup();
+  if (wasSurah && (s !== activeSurah || j !== activeJuz)) leaveSurahCleanup();
   currentTab = t;
-  if (s) activeSurah = s;
+  if (s) { activeSurah = s; activeJuz = j; }
   render();
   window.scrollTo(0, (wasSurah && !s && t === 'quran') ? (listScroll || 0) : 0);
 }
-function openSurah(id) {
+function openSurah(id, juz) {
+  juz = juz || 0;
   if (query) closeSearch();
   if (!activeSurah) listScroll = window.scrollY;
   try {
-    if (navDepth === 0) { history.pushState({ t:'quran', s:0 }, ''); history.pushState({ t:'quran', s:id }, ''); }
+    if (navDepth === 0) { history.pushState({ t:'quran', s:0 }, ''); history.pushState({ t:'quran', s:id, j:juz }, ''); }
     else if (navDepth === 1) {
       if (currentTab !== 'quran') history.replaceState({ t:'quran', s:0 }, '');
-      history.pushState({ t:'quran', s:id }, '');
-    } else history.replaceState({ t:'quran', s:id }, '');
+      history.pushState({ t:'quran', s:id, j:juz }, '');
+    } else history.replaceState({ t:'quran', s:id, j:juz }, '');
   } catch (e) {}
   navDepth = 2;
-  if (activeSurah && activeSurah !== id) leaveSurahCleanup();
-  activeSurah = id; currentTab = 'quran';
+  if (activeSurah && (activeSurah !== id || activeJuz !== juz)) leaveSurahCleanup();
+  activeSurah = id; activeJuz = juz; currentTab = 'quran';
   render(); window.scrollTo(0, 0);
 }
 window.addEventListener('popstate', e => {
@@ -946,7 +1003,7 @@ function syncAudio() {
 }
 function highlightPlaying(n) {
   if (playingEl) playingEl.classList.remove('playing');
-  playingEl = (activeSurah === play.id && ayahEls[n - 1]) || null;
+  playingEl = (viewHas(play.id, n) && elFor(play.id, n)) || null;
   if (!playingEl) return;
   playingEl.classList.add('playing');
   const hdr = $('.hdr'), r = playingEl.getBoundingClientRect();
@@ -959,8 +1016,8 @@ function setupMediaSession(id, n) {
     navigator.mediaSession.metadata = new MediaMetadata({ title:'سورة ' + SURAHS[id - 1], artist:(RECITERS[cfg.reciter] || RECITERS.afasy).n, album:'الآية ' + n });
     navigator.mediaSession.setActionHandler('play', () => audioPlayer.play());
     navigator.mediaSession.setActionHandler('pause', () => audioPlayer.pause());
-    navigator.mediaSession.setActionHandler('nexttrack', () => { if (play.id && play.n < AYAHS[play.id - 1]) playAyah(play.id, play.n + 1); });
-    navigator.mediaSession.setActionHandler('previoustrack', () => { if (play.id && play.n > 1) playAyah(play.id, play.n - 1); });
+    navigator.mediaSession.setActionHandler('nexttrack', () => { const nx = play.id && stepAyah(play.id, play.n, 1); if (nx) playAyah(nx[0], nx[1]); });
+    navigator.mediaSession.setActionHandler('previoustrack', () => { const pv = play.id && stepAyah(play.id, play.n, -1); if (pv) playAyah(pv[0], pv[1]); });
   } catch (e) {}
 }
 function playAyah(id, n) {
@@ -969,7 +1026,8 @@ function playAyah(id, n) {
   const p = audioPlayer.play();
   if (p && p.catch) p.catch(err => { if (err && err.name === 'AbortError') return; toast('تعذر تشغيل التلاوة، تحقق من الاتصال'); stopPlayback(); });
   highlightPlaying(n);
-  if (n < AYAHS[id - 1]) preloader.src = ayahAudioUrl(id, n + 1);   /* تحميل مسبق للآية التالية لتقليل الفاصل */
+  const nx = stepAyah(id, n, 1);
+  if (nx) preloader.src = ayahAudioUrl(nx[0], nx[1]);   /* تحميل مسبق للآية التالية لتقليل الفاصل */
   setupMediaSession(id, n);
 }
 function stopPlayback() {
@@ -980,8 +1038,13 @@ function stopPlayback() {
 }
 function toggleAudio(id) {
   if (isPlaying) { audioPlayer.pause(); return; }
-  if (play.id === id && play.n) {                       /* استئناف بعد إيقاف مؤقت */
+  if (play.id && play.n && viewHas(play.id, play.n)) {  /* استئناف بعد إيقاف مؤقت */
     const p = audioPlayer.play(); if (p && p.catch) p.catch(() => {}); return;
+  }
+  if (activeJuz) {                                       /* ابدأ من موضعك في الجزء، وإلا من أوله */
+    const lr = state.lastRead, r = juzRange(activeJuz);
+    if (lr && inJuz(activeJuz, lr.surah, lr.ayah)) playAyah(lr.surah, lr.ayah); else playAyah(r.s, r.a);
+    return;
   }
   playAyah(id, state.reading[id] > 0 ? state.reading[id] : 1);   /* ابدأ من الآية التي وصلت إليها في القراءة */
 }
@@ -989,9 +1052,10 @@ audioPlayer.addEventListener('play', () => { isPlaying = true; syncAudio(); });
 audioPlayer.addEventListener('pause', () => { if (audioPlayer.ended) return; isPlaying = false; syncAudio(); });
 audioPlayer.addEventListener('ended', () => {
   if (!play.id) return;
-  if (activeSurah !== play.id) { stopPlayback(); return; }
-  if (play.n < AYAHS[play.id - 1]) playAyah(play.id, play.n + 1);
-  else { stopPlayback(); toast('انتهت السورة، صدق الله العظيم'); }
+  if (!viewHas(play.id, play.n)) { stopPlayback(); return; }
+  const nx = stepAyah(play.id, play.n, 1);
+  if (nx) playAyah(nx[0], nx[1]);
+  else { stopPlayback(); toast(activeJuz ? 'انتهى الجزء، صدق الله العظيم' : 'انتهت السورة، صدق الله العظيم'); }
 });
 audioPlayer.addEventListener('error', () => { if (play.id) { toast('تعذر تشغيل التلاوة، تحقق من الاتصال'); stopPlayback(); } });
 
@@ -1152,6 +1216,16 @@ function setTab(id) {
 }
 function closeSearch() { query = ''; $('#q').value = ''; $('#searchRow').hidden = true; $('#searchBtn').setAttribute('aria-expanded', 'false'); }
 
+/* إتمام جزء الوِرد: تسجيله والانتقال للجزء التالي */
+function wirdComplete() {
+  const w = state.wird;
+  w.undo = { juz:w.juz, khatmas:w.khatmas, day:today(), n:w.day === today() ? w.n : 0, prevDay:w.day };
+  w.n = wirdToday() + 1; w.day = today();
+  if (w.juz >= 30) { w.juz = 1; w.khatmas++; toast('ما شاء الله، ختمت القرآن 🌙 تقبّل الله منك'); }
+  else { w.juz++; toast('تقبّل الله، الجزء التالي: ' + JUZ_NAMES[w.juz - 1]); }
+  saveState(); vibrate(15);
+}
+
 /* ===================== الأحداث ===================== */
 document.addEventListener('click', e => {
   if (e.target.classList && e.target.classList.contains('backdrop')) return closeSheet();
@@ -1169,7 +1243,8 @@ document.addEventListener('click', e => {
     case 'tab': setTab(b.dataset.id); break;
     case 'open-surah': openSurah(+b.dataset.id); break;
     case 'resume': if (state.lastRead) openSurah(state.lastRead.surah); break;
-    case 'retry-surah': if (activeSurah) loadSurah(activeSurah, true); break;
+    case 'retry-surah': if (activeSurah) { if (activeJuz) loadJuz(activeJuz, true); else loadSurah(activeSurah, true); } break;
+    case 'juz-back': setTab('home'); break;
     case 'back-quran':
       if (navDepth === 2) history.back(); else applyNav({ t:'quran', s:0 });
       break;
@@ -1178,30 +1253,24 @@ document.addEventListener('click', e => {
       const order = ['sm','md','lg','xl'];
       const i = Math.min(order.length - 1, Math.max(0, order.indexOf(cfg.fs) + (+b.dataset.d)));
       cfg.fs = order[i]; document.documentElement.dataset.fs = cfg.fs; saveCfg();
-      const keep = state.reading[activeSurah];
-      if (keep > 1 && ayahEls[keep - 1]) ayahEls[keep - 1].scrollIntoView({ block:'start' });
+      const pos = state.lastRead, keepEl = pos && elFor(pos.surah, pos.ayah);
+      if (keepEl && (activeJuz || pos.ayah > 1)) keepEl.scrollIntoView({ block:'start' });
       break;
     }
     case 'ayah':
-      if (activeSurah) { b.classList.add('flash'); setTimeout(() => b.classList.remove('flash'), 1200); showTafsir(activeSurah, +b.dataset.n); }
+      if (activeSurah) { b.classList.add('flash'); setTimeout(() => b.classList.remove('flash'), 1200); showTafsir(+b.dataset.s || activeSurah, +b.dataset.n); }
       break;
     case 'tafsir-nav': if (tafCtx) showTafsir(tafCtx.id, tafCtx.n + (+b.dataset.d)); break;
-    case 'play-from': if (activeSurah) { closeSheet(); playAyah(activeSurah, +b.dataset.n); } break;
+    case 'play-from': if (activeSurah) { const pid = tafCtx ? tafCtx.id : activeSurah; closeSheet(); playAyah(pid, +b.dataset.n); } break;
     case 'wird-read': {
-      const r = juzRange(state.wird.juz);
-      jumpTo = { id:r.s, n:r.a };
-      openSurah(r.s);
+      /* يفتح الجزء كاملاً متتابعاً؛ وإن كنت قد بدأته من قبل يكمل من آخر موضع وصلت إليه */
+      const j = state.wird.juz, r = juzRange(j), lr = state.lastRead;
+      jumpTo = (lr && inJuz(j, lr.surah, lr.ayah)) ? { id:lr.surah, n:lr.ayah } : { id:r.s, n:r.a };
+      openSurah(r.s, j);
       break;
     }
-    case 'wird-done': {
-      const w = state.wird;
-      w.undo = { juz:w.juz, khatmas:w.khatmas, day:today(), n:w.day === today() ? w.n : 0, prevDay:w.day };
-      w.n = wirdToday() + 1; w.day = today();
-      if (w.juz >= 30) { w.juz = 1; w.khatmas++; toast('ما شاء الله، ختمت القرآن 🌙 تقبّل الله منك'); }
-      else { w.juz++; toast('تقبّل الله، الجزء التالي: ' + JUZ_NAMES[w.juz - 1]); }
-      saveState(); vibrate(15); render();
-      break;
-    }
+    case 'wird-done': wirdComplete(); render(); break;
+    case 'wird-finish': wirdComplete(); setTab('home'); break;
     case 'wird-undo': {
       const w = state.wird, u = w.undo; if (!u) break;
       w.juz = u.juz; w.khatmas = u.khatmas; w.n = u.n; w.day = u.prevDay || ''; w.undo = null;
@@ -1317,7 +1386,7 @@ function openSheet(id, html) {
   const root = $('#sheetRoot'), had = !!root.innerHTML;
   root.innerHTML = `<div class="backdrop"></div><section class="sheet" role="dialog" aria-modal="true"><div class="grab"></div>${html}</section>`;
   document.body.classList.add('noscroll');
-  if (!had) { try { history.pushState({ t:currentTab, s:activeSurah || 0, sheet:1 }, ''); } catch (e) {} }
+  if (!had) { try { history.pushState({ t:currentTab, s:activeSurah || 0, j:activeJuz, sheet:1 }, ''); } catch (e) {} }
 }
 function closeSheet(fromPop) {
   const root = $('#sheetRoot'), had = !!root.innerHTML;

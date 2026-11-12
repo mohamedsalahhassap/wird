@@ -428,12 +428,15 @@ const svg = (name, extra = '') => `<svg viewBox="0 0 24 24" fill="none" stroke="
 /* ===================== الحالة والإعدادات ===================== */
 const SKEY = 'azkar_state_v2', CKEY = 'azkar_cfg_v1';
 function loadState() {
-  const base = { date: today(), counts: {}, sebha: { n:0, total:0, dhikr:0, target:33 }, wird: { juz:1, khatmas:0, day:'', n:0, undo:null }, history: {}, reading: {}, celebrated: {}, lastRead: null, quranOffline: false, tafsirOffline: false };
+  const base = { date: today(), counts: {}, sebha: { n:0, total:0, dhikr:0, target:33 }, wird: { juz:1, khatmas:0, day:'', n:0, undo:null, hist:[] }, history: {}, reading: {}, celebrated: {}, lastRead: null, quranOffline: false, tafsirOffline: false };
   const s = store.get(SKEY, null);
   if (s && typeof s === 'object') {
     s.sebha = Object.assign(base.sebha, s.sebha || {});
     s.wird = Object.assign(base.wird, s.wird || {});
     if (!(s.wird.juz >= 1 && s.wird.juz <= 30)) s.wird.juz = 1;
+    if (!Array.isArray(s.wird.hist)) s.wird.hist = [];
+    if (s.wird.undo && !s.wird.hist.length) s.wird.hist.push({ juz:s.wird.undo.juz, khatmas:s.wird.undo.khatmas, n:s.wird.undo.n, prevDay:s.wird.undo.prevDay, pos:s.wird.undo.pos || null });
+    s.wird.undo = null;
     ['counts','history','reading','celebrated'].forEach(k => { if (!s[k] || typeof s[k] !== 'object') s[k] = {}; });
     return Object.assign(base, s);
   }
@@ -872,7 +875,7 @@ async function loadSurah(id, restore) {
     if (token !== loadToken || activeSurah !== id) return;
     const b = $('#quranText'); if (!b) return;
     const offline = !navigator.onLine || e.name === 'TypeError' || e.name === 'AbortError';
-    b.innerHTML = `<div class="q-state">${offline ? 'تعذر تحميل السورة. تحقق من اتصالك بالإنترنت.<br><small>يمكنك تحميل المصحف كاملاً للقراءة دون إنترنت من الإعدادات.</small>' : 'حدث خطأ أثناء جلب السورة.'}<br><br><button class="btn" data-act="retry-surah">إعادة المحاولة</button></div>`;
+    b.innerHTML = `<div class="q-state">${offline ? 'المصحف غير محمَّل على جهازك بعد.<br><small>افتح التطبيق مرة واحدة والإنترنت شغّال، وسيُحمَّل تلقائياً في الخلفية (بضعة ميجا)، وبعدها يعمل دون إنترنت.</small>' : 'حدث خطأ أثناء جلب السورة.'}<br><br><button class="btn" data-act="retry-surah">إعادة المحاولة</button></div>`;
   }
 }
 
@@ -903,7 +906,7 @@ async function loadJuz(j, restore) {
     if (token !== loadToken || activeJuz !== j) return;
     const b = $('#quranText'); if (!b) return;
     const offline = !navigator.onLine || e.name === 'TypeError' || e.name === 'AbortError';
-    b.innerHTML = `<div class="q-state">${offline ? 'تعذر تحميل الجزء. تحقق من اتصالك بالإنترنت.<br><small>يمكنك تحميل المصحف كاملاً للقراءة دون إنترنت من الإعدادات.</small>' : 'حدث خطأ أثناء جلب الجزء.'}<br><br><button class="btn" data-act="retry-surah">إعادة المحاولة</button></div>`;
+    b.innerHTML = `<div class="q-state">${offline ? 'المصحف غير محمَّل على جهازك بعد.<br><small>افتح التطبيق مرة واحدة والإنترنت شغّال، وسيُحمَّل تلقائياً في الخلفية (بضعة ميجا)، وبعدها يعمل دون إنترنت.</small>' : 'حدث خطأ أثناء جلب الجزء.'}<br><br><button class="btn" data-act="retry-surah">إعادة المحاولة</button></div>`;
   }
 }
 
@@ -1125,10 +1128,12 @@ async function cacheWholeEdition(cache, allUrl, surahUrl) {
     await cache.put(surahUrl(s.number), new Response(body, { headers:{ 'Content-Type':'application/json' } }));
   }
 }
-async function downloadQuran() {
-  const st = $('#dlStatus'), btn = $('#dlBtn');
-  const set = t => { if (st) st.textContent = t; };
-  if (btn) btn.disabled = true;
+let dlBusy = false;
+async function downloadQuran(silent) {
+  if (dlBusy) return;
+  dlBusy = true;
+  const set = t => { const st = $('#dlStatus'); if (st) st.textContent = t; };
+  const btn0 = $('#dlBtn'); if (btn0) btn0.disabled = true;
   let step = 'quran';
   try {
     const cache = await openQCache();
@@ -1145,11 +1150,37 @@ async function downloadQuran() {
       state.tafsirOffline = true; saveState();
     }
     set('✓ تم تحميل المصحف والتفسير، ويعملان الآن دون إنترنت');
+    if (silent) toast('تم تحميل المصحف والتفسير ✓ يعملان الآن دون إنترنت');
   } catch (e) {
     set(step === 'tafsir' ? 'تم تحميل المصحف، لكن تعذر تحميل التفسير. حاول مرة أخرى.' : 'تعذر التحميل. تأكد من الاتصال وحاول مرة أخرى.');
-    if (btn) btn.disabled = false;
-  }
+    const btn = $('#dlBtn'); if (btn) btn.disabled = false;
+  } finally { dlBusy = false; }
 }
+/* عدّ السور المحفوظة فعلاً في الكاش (للتأكد أن الحفظ سليم ولم يُمسح) */
+async function quranCacheCounts() {
+  const c = await openQCache(); if (!c) return null;
+  try {
+    const ks = await c.keys(); let q = 0, t = 0;
+    for (const r of ks) { if (/\/surah\/\d+\/quran-uthmani/.test(r.url)) q++; else if (/\/surah\/\d+\/ar\.muyassar/.test(r.url)) t++; }
+    return { q, t };
+  } catch (e) { return null; }
+}
+/* تحميل تلقائي صامت: عند الفتح أو عند عودة الإنترنت، إن لم يكن المصحف والتفسير محفوظين كاملين */
+async function ensureQuranOffline() {
+  if (!navigator.onLine || !('caches' in window) || dlBusy) return;
+  try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist(); } catch (e) {}
+  const c = await quranCacheCounts();
+  if (c) {
+    let ch = false;
+    if (state.quranOffline && c.q < 114) { state.quranOffline = false; ch = true; }
+    if (state.tafsirOffline && c.t < 114) { state.tafsirOffline = false; ch = true; }
+    if (ch) saveState();
+  }
+  if (state.quranOffline && state.tafsirOffline) return;
+  downloadQuran(true);
+}
+setTimeout(ensureQuranOffline, 4000);
+window.addEventListener('online', () => setTimeout(ensureQuranOffline, 1500));
 
 /* ===================== الرئيسية والسبحة ===================== */
 /* التاريخ الهجري (أم القرى) مع تقدّمه بعد المغرب وإمكانية التعديل يوماً من الإعدادات */
@@ -1174,7 +1205,7 @@ function wirdCard() {
     <div class="wird-rng">من سورة ${esc(SURAHS[r.s - 1])} · آية ${toAr(r.a)}<br>إلى سورة ${esc(SURAHS[r.es - 1])} · آية ${toAr(r.ea)}</div>
     <div class="wird-bar" role="progressbar" aria-valuemin="0" aria-valuemax="30" aria-valuenow="${w.juz - 1}"><i style="width:${pct}%"></i></div>
     <div class="wird-btns"><button class="btn" data-act="wird-read">📖 ابدأ القراءة</button><button class="btn ghost" data-act="wird-done">✓ أتممت الجزء</button></div>
-    ${n || w.khatmas ? `<div class="wird-foot"><span>${n ? `أتممت اليوم ${toAr(n)} ${n === 1 ? 'جزءًا' : 'أجزاء'} ✨` : ''}${w.khatmas ? `${n ? ' · ' : ''}ختمات: ${toAr(w.khatmas)}` : ''}</span>${w.undo && w.undo.day === today() ? '<button class="wird-undo" data-act="wird-undo">تراجع</button>' : ''}</div>` : ''}
+    ${n || w.khatmas || (w.hist && w.hist.length) ? `<div class="wird-foot"><span>${n ? `أتممت اليوم ${toAr(n)} ${n === 1 ? 'جزءًا' : 'أجزاء'} ✨` : ''}${w.khatmas ? `${n ? ' · ' : ''}ختمات: ${toAr(w.khatmas)}` : ''}</span>${w.hist && w.hist.length ? '<button class="wird-undo" data-act="wird-undo">تراجع ← الجزء ' + toAr(w.hist[w.hist.length - 1].juz) + '</button>' : ''}</div>` : ''}
   </section>`;
 }
 function renderHome() {
@@ -1240,7 +1271,9 @@ function closeSearch() { query = ''; $('#q').value = ''; $('#searchRow').hidden 
 /* إتمام جزء الوِرد: تسجيله والانتقال للجزء التالي */
 function wirdComplete() {
   const w = state.wird;
-  w.undo = { juz:w.juz, khatmas:w.khatmas, day:today(), n:w.day === today() ? w.n : 0, prevDay:w.day, pos:w.pos || null };
+  if (!Array.isArray(w.hist)) w.hist = [];
+  w.hist.push({ juz:w.juz, khatmas:w.khatmas, n:w.n || 0, prevDay:w.day, pos:w.pos || null });
+  if (w.hist.length > 60) w.hist.shift();
   w.pos = null;
   w.n = wirdToday() + 1; w.day = today();
   if (w.juz >= 30) { w.juz = 1; w.khatmas++; toast('ما شاء الله، ختمت القرآن 🌙 تقبّل الله منك'); }
@@ -1294,9 +1327,9 @@ document.addEventListener('click', e => {
     case 'wird-done': wirdComplete(); render(); break;
     case 'wird-finish': wirdComplete(); setTab('home'); break;
     case 'wird-undo': {
-      const w = state.wird, u = w.undo; if (!u) break;
-      w.juz = u.juz; w.khatmas = u.khatmas; w.n = u.n; w.day = u.prevDay || ''; w.undo = null; w.pos = u.pos || null;
-      saveState(); render();
+      const w = state.wird, u = Array.isArray(w.hist) ? w.hist.pop() : null; if (!u) break;
+      w.juz = u.juz; w.khatmas = u.khatmas; w.n = u.n; w.day = u.prevDay || ''; w.pos = u.pos || null;
+      saveState(); render(); toast('رجعت للجزء: ' + JUZ_NAMES[w.juz - 1]);
       break;
     }
     case 'count': {
@@ -1342,7 +1375,7 @@ document.addEventListener('click', e => {
       } else toast('فعّل إذن الإشعارات أولاً من المتصفح');
       break;
     }
-    case 'dl-quran': downloadQuran(); break;
+    case 'dl-quran': downloadQuran(false); break;
     case 'install-open': installApp(); break;
     case 'install-later': store.set('azkar_install_dismiss', Date.now()); closeSheet(); $('#installBtn').hidden = true; break;
     case 'update': location.reload(); break;
@@ -1440,7 +1473,7 @@ function openSettings() {
       <select id="reciterSel">${Object.keys(RECITERS).map(k => `<option value="${k}" ${cfg.reciter === k ? 'selected' : ''}>${esc(RECITERS[k].n)}</option>`).join('')}</select></div>
     <div class="field"><span class="l">القراءة دون إنترنت</span>
       <button class="btn ghost" id="dlBtn" data-act="dl-quran" ${state.quranOffline && state.tafsirOffline ? 'disabled' : ''}>⬇ تحميل المصحف والتفسير</button>
-      <p class="hint" id="dlStatus">${state.quranOffline && state.tafsirOffline ? '✓ المصحف والتفسير محمّلان ويعملان دون إنترنت' : 'يُحفظ نص المصحف والتفسير على جهازك مرة واحدة (حجمهما بضعة ميجابايت). التلاوة الصوتية تحتاج إنترنت دائماً.'}</p></div>
+      <p class="hint" id="dlStatus">${state.quranOffline && state.tafsirOffline ? '✓ المصحف والتفسير محمّلان ويعملان دون إنترنت' : 'يُحمَّل المصحف والتفسير تلقائياً في الخلفية عند فتح التطبيق مع الإنترنت (بضعة ميجابايت)، أو اضغط الزر. التلاوة الصوتية تحتاج إنترنت دائماً.'}</p></div>
     <div class="field"><span class="l">التذكيرات</span><div id="remBox">${remBoxHTML()}</div></div>
     <button class="btn ghost block" data-act="about" style="margin-bottom:.6rem">عن التطبيق</button>
     <button class="btn block" data-act="close">تم</button>`);

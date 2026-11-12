@@ -171,6 +171,8 @@ svg .f{fill:currentColor;fill-opacity:.16;stroke:none}
 .wird-rng{color:var(--muted);font-size:.86rem;line-height:1.8}
 .wird-bar{height:6px;border-radius:6px;background:var(--soft);overflow:hidden;margin:.7rem 0 .8rem}.wird-bar i{display:block;height:100%;background:linear-gradient(90deg,var(--primary),var(--primary-2));border-radius:6px}
 .wird-btns{display:grid;grid-template-columns:1.2fr 1fr;gap:8px}.wird-btns .btn{padding:.65rem .5rem;font-size:.95rem}
+.wird-miss{background:color-mix(in srgb,var(--accent) 14%,transparent);border-radius:.8rem;padding:.55rem .75rem;margin:.6rem 0 .7rem;font-size:.86rem;line-height:1.8;color:var(--text)}
+.rembar .ghost{background:transparent;color:#fff;border:1px solid rgba(255,255,255,.45)}
 .wird-foot{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:.7rem;font-size:.82rem;color:var(--muted)}
 .wird-undo{border:none;background:none;color:var(--primary);font-weight:700;font-size:.82rem;cursor:pointer;text-decoration:underline;padding:0}
 .tgl{display:flex;align-items:center;gap:.6rem;font-weight:600;margin-bottom:.5rem}.tgl input,.rem-row input[type=checkbox]{width:1.25rem;height:1.25rem;accent-color:var(--primary)}
@@ -450,9 +452,11 @@ function loadCfg() {
 }
 const REM_DEF = { m:{ on:true, t:'06:00' }, e:{ on:true, t:'17:30' }, w:{ on:false, t:'21:00' } };
 function loadRem(r) {
-  const out = { on:false, items:{} };
+  const out = { on:false, items:{}, chosen:false, askedAt:0 };
   r = r && typeof r === 'object' ? r : {};
-  out.on = r.on === true;
+  out.chosen = r.chosen === true;
+  out.askedAt = +r.askedAt || 0;
+  out.on = out.chosen ? r.on === true : true;   /* لم يختر المستخدم بنفسه: مفعّلة افتراضياً */
   for (const k of ['m','e','w']) {
     const it = (r.items && r.items[k]) || {};
     out.items[k] = { on: typeof it.on === 'boolean' ? it.on : REM_DEF[k].on, t: /^([01]\d|2[0-3]):[0-5]\d$/.test(it.t) ? it.t : REM_DEF[k].t };
@@ -625,8 +629,25 @@ const REMS = {
 const remMin = t => { const [a, b] = t.split(':'); return +a * 60 + +b; };
 const remFired = () => store.get(REM_KEY, {}) || {};
 const notifOK = () => typeof Notification !== 'undefined' && Notification.permission === 'granted';
+/* ===== تنبيه تأخّر الوِرد: عدد الأيام المتتالية الفائتة بعد آخر جزء أتممته ===== */
+const WIRD_MISS_DAYS = 2, WIRD_MISS_MAX = 14;
+function wirdMissed() {
+  const d = state.wird && state.wird.day; if (!d) return 0;
+  const n = Math.round((new Date(today() + 'T00:00:00') - new Date(d + 'T00:00:00')) / 864e5) - 1;
+  return n > 0 ? n : 0;
+}
+const missTxt = n => n === 2 ? 'يومين متتاليين' : n <= 10 ? toAr(n) + ' أيام متتالية' : toAr(n) + ' يومًا متتاليًا';
+const wirdLate = () => wirdMissed() >= WIRD_MISS_DAYS;
+/* تذكير الوِرد يعمل تلقائياً عند التأخّر حتى لو كان مغلقاً من القائمة */
+function remItem(k) {
+  const it = cfg.rem.items[k];
+  if (k === 'w' && it && !it.on) { const m = wirdMissed(); if (m >= WIRD_MISS_DAYS && m <= WIRD_MISS_MAX) return { on:true, t:it.t }; }
+  return it;
+}
+const remTitle = k => (k === 'w' && wirdLate()) ? 'وِردك تأخّر' : REMS[k].title;
+const remBody = k => (k === 'w' && wirdLate()) ? 'فاتك الوِرد ' + missTxt(wirdMissed()) + '، ارجع من الجزء ' + JUZ_NAMES[state.wird.juz - 1] + ' ولو بصفحات قليلة' : REMS[k].body;
 function remDue(k, now) {
-  const it = cfg.rem.items[k]; if (!it || !it.on) return false;
+  const it = remItem(k); if (!it || !it.on) return false;
   const m = now.getHours() * 60 + now.getMinutes(), t = remMin(it.t);
   if (m < t || m > t + 240) return false;                       /* تُرسل خلال 4 ساعات من الموعد فقط */
   if (remFired()[k] === today()) return false;
@@ -634,11 +655,11 @@ function remDue(k, now) {
 }
 async function showReminder(k) {
   const r = REMS[k];
-  if (!document.hidden) { toast('🔔 ' + r.body); vibrate(20); return; }
+  if (!document.hidden) { toast('🔔 ' + remBody(k)); vibrate(20); return; }
   if (notifOK() && 'serviceWorker' in navigator) {
     try {
       const reg = await navigator.serviceWorker.ready;
-      await reg.showNotification(r.title, { body:r.body, icon:'icons/icon-192.png', badge:'icons/icon-192.png', tag:'wird-' + k, lang:'ar', dir:'rtl', data:{ go:r.go } });
+      await reg.showNotification(remTitle(k), { body:remBody(k), icon:'icons/icon-192.png', badge:'icons/icon-192.png', tag:'wird-' + k, lang:'ar', dir:'rtl', data:{ go:r.go } });
     } catch (e) {}
   }
 }
@@ -658,7 +679,7 @@ function queueRemSync() { clearTimeout(remSyncT); remSyncT = setTimeout(syncRem,
 async function syncRem() {
   try {
     if (!('caches' in window)) return;
-    const data = { on: cfg.rem.on && notifOK(), items: cfg.rem.items, date: today(), fired: remFired(), done: { m:REMS.m.done(), e:REMS.e.done(), w:REMS.w.done() }, body: { m:REMS.m.body, e:REMS.e.body, w:REMS.w.body } };
+    const data = { on: cfg.rem.on && notifOK(), items: { m:remItem('m'), e:remItem('e'), w:remItem('w') }, date: today(), fired: remFired(), done: { m:REMS.m.done(), e:REMS.e.done(), w:REMS.w.done() }, body: { m:remBody('m'), e:remBody('e'), w:remBody('w') }, title: { m:remTitle('m'), e:remTitle('e'), w:remTitle('w') } };
     const c = await caches.open('azkar-rem-v1');
     await c.put('rem.json', new Response(JSON.stringify(data), { headers:{ 'content-type':'application/json' } }));
   } catch (e) {}
@@ -677,9 +698,27 @@ function remStatus() {
   if (!cfg.rem.on) return 'اختر الأذكار والأوقات المناسبة، وسيصلك إشعار بها إن لم تكن أتممتها بعد.';
   return 'يعمل التذكير بثبات والتطبيق مفتوح أو في الخلفية. وعند إغلاقه تماماً قد لا يصل على بعض الأجهزة (خصوصاً مع توفير البطارية) لأن المتصفحات لا تضمن ذلك دون خادم.';
 }
+/* شريط تفعيل التذكيرات بضغطة واحدة (إذن المتصفح لا يُمنح إلا بضغطة من المستخدم) */
+function showRemBar() {
+  if (typeof Notification === 'undefined' || Notification.permission !== 'default') return;
+  if (!cfg.rem.on || cfg.rem.chosen || cfg.rem.askedAt || $('#remBar')) return;
+  const bar = document.createElement('div');
+  bar.className = 'updatebar rembar'; bar.id = 'remBar'; bar.setAttribute('role', 'dialog');
+  bar.innerHTML = '<span>🔔 تفعيل تذكيرات الأذكار والوِرد؟</span><button id="remBarYes">تفعيل</button><button id="remBarNo" class="ghost">لاحقًا</button>';
+  document.body.appendChild(bar);
+  $('#remBarYes').onclick = async () => {
+    try { await Notification.requestPermission(); } catch (e) {}
+    cfg.rem.on = true; cfg.rem.chosen = true; saveCfg(); bar.remove();
+    registerPeriodic(); syncRem();
+    if (Notification.permission === 'granted') { toast('تم تفعيل التذكيرات ✓'); setTimeout(checkReminders, 300); }
+    else toast('لم يُمنح إذن الإشعارات، سيظهر التذكير داخل التطبيق فقط');
+    const b = $('#remBox'); if (b) b.innerHTML = remBoxHTML();
+  };
+  $('#remBarNo').onclick = () => { cfg.rem.askedAt = Date.now(); saveCfg(); bar.remove(); };
+}
 function remBoxHTML() {
   const rows = cfg.rem.on ? ['m','e','w'].map(k => `<div class="rem-row"><label><input type="checkbox" data-rem="${k}" ${cfg.rem.items[k].on ? 'checked' : ''}> ${REMS[k].name}</label><input type="time" data-remt="${k}" value="${cfg.rem.items[k].t}" aria-label="موعد ${REMS[k].name}"></div>`).join('') + '<button class="btn ghost" data-act="rem-test">🔔 جرّب إشعاراً الآن</button>' : '';
-  return `<label class="tgl"><input type="checkbox" id="remOn" ${cfg.rem.on ? 'checked' : ''}> تفعيل التذكيرات</label>${rows}<p class="hint">${remStatus()}</p>`;
+  return `<label class="tgl"><input type="checkbox" id="remOn" ${cfg.rem.on ? 'checked' : ''}> تفعيل التذكيرات</label>${rows}<p class="hint">${remStatus()}</p><p class="hint">وسينبّهك التطبيق تلقائياً إن فاتك الوِرد يومين متتاليين أو أكثر.</p>`;
 }
 function gotoTarget(go) {
   if (go === 'morning' || go === 'evening') { if (query) closeSearch(); closeSheet(); setTab(go); }
@@ -1204,6 +1243,7 @@ function wirdCard() {
     <div class="wird-juz">الجزء ${JUZ_NAMES[w.juz - 1]}</div>
     <div class="wird-rng">من سورة ${esc(SURAHS[r.s - 1])} · آية ${toAr(r.a)}<br>إلى سورة ${esc(SURAHS[r.es - 1])} · آية ${toAr(r.ea)}</div>
     <div class="wird-bar" role="progressbar" aria-valuemin="0" aria-valuemax="30" aria-valuenow="${w.juz - 1}"><i style="width:${pct}%"></i></div>
+    ${wirdLate() ? `<div class="wird-miss">فاتك الوِرد ${missTxt(wirdMissed())} 🤍 ارجع من الجزء ${JUZ_NAMES[w.juz - 1]} ولو بصفحات قليلة، فأحبّ الأعمال إلى الله أدومها وإن قلّ.</div>` : ''}
     <div class="wird-btns"><button class="btn" data-act="wird-read">📖 ابدأ القراءة</button><button class="btn ghost" data-act="wird-done">✓ أتممت الجزء</button></div>
     ${n || w.khatmas || (w.hist && w.hist.length) ? `<div class="wird-foot"><span>${n ? `أتممت اليوم ${toAr(n)} ${n === 1 ? 'جزءًا' : 'أجزاء'} ✨` : ''}${w.khatmas ? `${n ? ' · ' : ''}ختمات: ${toAr(w.khatmas)}` : ''}</span>${w.hist && w.hist.length ? '<button class="wird-undo" data-act="wird-undo">تراجع ← الجزء ' + toAr(w.hist[w.hist.length - 1].juz) + '</button>' : ''}</div>` : ''}
   </section>`;
@@ -1398,7 +1438,8 @@ document.addEventListener('change', e => {
   } else if (t.id === 'reciterSel' && RECITERS[t.value]) {
     cfg.reciter = t.value; saveCfg(); stopPlayback();
   } else if (t.id === 'remOn') {
-    cfg.rem.on = t.checked;
+    cfg.rem.on = t.checked; cfg.rem.chosen = true;
+    { const rb = $('#remBar'); if (rb) rb.remove(); }
     if (t.checked && typeof Notification !== 'undefined' && Notification.permission === 'default') {
       Notification.requestPermission().then(() => { saveCfg(); registerPeriodic(); const b = $('#remBox'); if (b) b.innerHTML = remBoxHTML(); });
     }
@@ -1575,6 +1616,7 @@ if ('serviceWorker' in navigator) navigator.serviceWorker.addEventListener('mess
   let go = ''; try { go = new URLSearchParams(location.search).get('go') || ''; } catch (e) {}
   if (go) { try { history.replaceState(history.state, '', location.pathname); } catch (e) {} setTimeout(() => gotoTarget(go), 100); }
   setTimeout(() => { checkReminders(); syncRem(); registerPeriodic(); }, 1500);
+  setTimeout(showRemBar, 6000);
 })();
 setInterval(() => {
   checkReminders();

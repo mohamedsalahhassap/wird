@@ -106,7 +106,7 @@ self.addEventListener('periodicsync', event => {
       if (m < t || m > t + 240) continue;
       if (d.fired && d.fired[k] === today) continue;
       if (d.date === today && d.done && d.done[k]) continue;
-      await self.registration.showNotification(names[k][0], { body:(d.body && d.body[k]) || '', icon:'icons/icon-192.png', badge:'icons/icon-192.png', tag:'wird-' + k, lang:'ar', dir:'rtl', data:{ go:names[k][1] } });
+      await self.registration.showNotification((d.title && d.title[k]) || names[k][0], { body:(d.body && d.body[k]) || '', icon:'icons/icon-192.png', badge:'icons/icon-192.png', tag:'wird-' + k, lang:'ar', dir:'rtl', data:{ go:names[k][1] } });
       d.fired = d.fired || {}; d.fired[k] = today; changed = true;
     }
     if (changed) await cache.put('rem.json', new Response(JSON.stringify(d), { headers:{ 'content-type':'application/json' } }));

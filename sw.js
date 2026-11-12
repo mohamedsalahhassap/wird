@@ -1,29 +1,26 @@
 /* Service Worker — تطبيق الأذكار
-   استراتيجية Network-First: في كل فتح يجلب أحدث ملفات من السيرفر أولاً، وعند انقطاع النت يعمل من الكاش.
-   لا حاجة لتغيير رقم إصدار عند كل تعديل؛ يتحدّث التطبيق تلقائياً في كل مرة يُفتح فيها بوجود الإنترنت.
-   (الكاش 'azkar-quran-v1' الخاص بالمصحف والتفسير منفصل ولا يُحذف أبداً من هنا). */
-const CACHE = 'azkar-app';
+   - ملفات HTML و Manifest: استراتيجية Stale-While-Revalidate (فتح فوري 0ms مع التحديث بالخلفية).
+   - الخطوط والأيقونات الثابتة: استراتيجية Cache-First لتوفير استهلاك الشبكة.
+   - إدارة الإصدارات: حذف أي كاش قديم لا يطابق الإصدار الحالي مع الحفاظ على 'azkar-quran-v1'. */
+const CACHE = 'azkar-app-v3';
 
-// ملفات أساسية: لو فشل تحميل أي منها يفشل التثبيت
 const REQUIRED = ['./', './index.html', './manifest.json'];
 
-// ملفات ثانوية: خطوط وأيقونات
 const OPTIONAL = [
   './icons/icon-192.png',
   './icons/icon-512.png',
   './icons/icon-maskable-512.png',
   './icons/apple-touch-icon.png',
+  './icons/og-image.png',
   './fonts/cairo-arabic-400-normal.woff2',
   './fonts/cairo-arabic-600-normal.woff2',
   './fonts/cairo-arabic-700-normal.woff2',
-  './fonts/cairo-latin-400-normal.woff2',
-  './fonts/cairo-latin-700-normal.woff2',
   './fonts/amiri-arabic-400-normal.woff2',
   './fonts/scheherazade-new-arabic-400-normal.woff2'
 ];
 
 self.addEventListener('install', event => {
-  self.skipWaiting(); // تفعيل النسخة الجديدة فوراً بدون انتظار إغلاق التبويبات
+  self.skipWaiting();
   event.waitUntil((async () => {
     const cache = await caches.open(CACHE);
     await cache.addAll(REQUIRED.map(u => new Request(u, { cache: 'reload' })));
@@ -33,10 +30,24 @@ self.addEventListener('install', event => {
 
 self.addEventListener('activate', event => {
   event.waitUntil((async () => {
-    // حذف الكاش القديم المسمّى بأرقام إصدارات (azkar-v2.0.1 ...) فقط، وإبقاء azkar-app و azkar-quran-v1
-    const keys = await caches.keys();
-    await Promise.all(keys.filter(k => /^azkar-v\d/.test(k)).map(k => caches.delete(k)));
-    await self.clients.claim(); // السيطرة الفورية على التبويبات المفتوحة
+    // حذف الكاشات القديمة (azkar-app وأي إصدار سابق) مع إبقاء الحالي وكاش المصحف والتذكيرات
+    const keys = await caches.keys();                                                                        // <-- جديد
+    await Promise.all(keys.filter(k => k.startsWith('azkar-app') && k !== CACHE).map(k => caches.delete(k))); // <-- جديد
+
+    const cache = await caches.open(CACHE);
+    const validUrls = new Set(
+      [...REQUIRED, ...OPTIONAL].map(u => new URL(u, self.location).href)
+    );
+    const requests = await cache.keys();
+
+    // حذف أي ملف مخزّن لم يعد موجوداً في REQUIRED أو OPTIONAL تلقائياً
+    await Promise.all(
+      requests
+        .filter(req => !validUrls.has(req.url))
+        .map(req => cache.delete(req))
+    );
+
+    await self.clients.claim();
   })());
 });
 
@@ -50,33 +61,53 @@ self.addEventListener('fetch', event => {
   const url = new URL(req.url);
   if (url.origin !== location.origin) return;
 
+  const isStaticAsset = /\/(fonts|icons)\//.test(url.pathname) || 
+                        /\.(woff2?|ttf|png|jpg|jpeg|svg|ico|webp)$/i.test(url.pathname);
+
   event.respondWith((async () => {
     const cache = await caches.open(CACHE);
+    const cached = await cache.match(req, { ignoreSearch: true });
 
-    try {
-      // حاول جلب النسخة الأحدث من الشبكة (مع التحقق من التغيّر)
-      const fresh = await fetch(req, { cache: 'no-cache' });
-      if (fresh && fresh.ok) {
-        cache.put(req, fresh.clone()).catch(() => {});
+    // 1. Cache-First للملفات الثابتة (الخطوط والأيقونات) لتوفير طلبات الشبكة
+    if (isStaticAsset) {
+      if (cached) return cached;
+      try {
+        const fresh = await fetch(req);
+        if (fresh && fresh.ok) cache.put(req, fresh.clone()).catch(() => {});
         return fresh;
-      }
-    } catch (err) {
-      // انقطاع الإنترنت: من الكاش
-      const hit = await cache.match(req, { ignoreSearch: true });
-      if (hit) return hit;
-
-      if (req.mode === 'navigate') {
-        const page = await cache.match('./index.html');
-        if (page) return page;
+      } catch (err) {
+        return Response.error();
       }
     }
 
-    // احتياطي: لو رد السيرفر بخطأ أو فشلت الشبكة، استخدم الكاش إن وُجد
-    return (await cache.match(req, { ignoreSearch: true })) || Response.error();
+    // 2. Stale-While-Revalidate للـ HTML والـ manifest
+    const fetchPromise = fetch(req, { cache: 'no-cache' })
+      .then(fresh => {
+        if (fresh && fresh.ok) {
+          cache.put(req, fresh.clone()).catch(() => {});
+        }
+        return fresh;
+      })
+      .catch(() => null);
+
+    if (cached) {
+      event.waitUntil(fetchPromise);
+      return cached;
+    }
+
+    const networkRes = await fetchPromise;
+    if (networkRes) return networkRes;
+
+    if (req.mode === 'navigate') {
+      const page = await cache.match('./index.html');
+      if (page) return page;
+    }
+
+    return Response.error();
   })());
 });
 
-/* ===== التذكيرات: النقر على الإشعار + التنبيه الدوري بالخلفية (إن دعمه الجهاز) ===== */
+/* ===== التذكيرات: النقر على الإشعار + التنبيه الدوري بالخلفية ===== */
 self.addEventListener('notificationclick', event => {
   event.notification.close();
   const go = (event.notification.data && event.notification.data.go) || '';

@@ -10,9 +10,13 @@
 <meta property="og:description" content="أذكار الصباح والمساء والنوم وبعد الصلاة، والقرآن الكريم بالتفسير والتلاوة، ومواقيت الصلاة، وتعمل بدون إنترنت.">
 <meta property="og:locale" content="ar_AR">
 <meta property="og:url" content="https://mohamedsalahhassap.github.io/wird/">
-<meta property="og:image" content="https://mohamedsalahhassap.github.io/wird/icons/icon-512.png">
-<meta property="og:image:width" content="512">
-<meta property="og:image:height" content="512">
+<meta property="og:image" content="icon-512.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="وِرد — الأذكار والقرآن">
+<meta name="twitter:description" content="أذكار الصباح والمساء والنوم وبعد الصلاة، والقرآن الكريم بالتفسير والتلاوة، ومواقيت الصلاة، وتعمل بدون إنترنت.">
+<meta name="twitter:image" content="https://mohamedsalahhassap.github.io/wird/icons/og-image.png">
 <link rel="canonical" href="https://mohamedsalahhassap.github.io/wird/">
 <meta name="theme-color" content="#0f766e">
 <meta name="color-scheme" content="light dark">
@@ -721,8 +725,15 @@ function remBoxHTML() {
   return `<label class="tgl"><input type="checkbox" id="remOn" ${cfg.rem.on ? 'checked' : ''}> تفعيل التذكيرات</label>${rows}<p class="hint">${remStatus()}</p><p class="hint">وسينبّهك التطبيق تلقائياً إن فاتك الوِرد يومين متتاليين أو أكثر.</p>`;
 }
 function gotoTarget(go) {
-  if (go === 'morning' || go === 'evening') { if (query) closeSearch(); closeSheet(); setTab(go); }
-  else if (go === 'wird') { closeSheet(); setTab('home'); setTimeout(() => { const w = $('.wird'); if (w) w.scrollIntoView({ block:'center', behavior:'smooth' }); }, 150); }
+  if (go === 'morning' || go === 'evening' || go === 'quran' || go === 'sebha' || go === 'azkar') {
+    if (query) closeSearch();
+    closeSheet();
+    setTab(go);
+  } else if (go === 'wird') {
+    closeSheet();
+    setTab('home');
+    setTimeout(() => { const w = $('.wird'); if (w) w.scrollIntoView({ block:'center', behavior:'smooth' }); }, 150);
+  }
 }
 
 /* ===================== التنقل والبطاقات ===================== */
